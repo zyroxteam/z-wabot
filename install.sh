@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # ============================================================
 #   ZYROX WHATSAPP BOT — Installer for Termux
-#   Usage: bash <(curl -sL https://zyrox-wabot.vercel.app/install.sh)
+#   Usage: bash <(curl -sL https://z-wabot.vercel.app/install.sh)
 # ============================================================
 set -e
 

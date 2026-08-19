@@ -5,11 +5,11 @@
 ![ZYROX](https://img.shields.io/badge/ZYROX-WA_BOT-ff00ff?style=for-the-badge) ![Termux](https://img.shields.io/badge/Platform-Termux-green?style=for-the-badge) ![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)
 
 ## 🌐 Website
-👉 **https://zyrox-wabot.vercel.app**
+👉 **https://z-wabot.vercel.app**
 
 ## 🚀 One-Command Install (Termux)
 ```bash
-bash <(curl -sL https://zyrox-wabot.vercel.app/install.sh)
+bash <(curl -sL https://z-wabot.vercel.app/install.sh)
 ```
 
 ## 📦 Manual Install
