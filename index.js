@@ -186,10 +186,10 @@ async function connect() {
 sock = makeWASocket({
   version,
   auth: {
-    creds: state.state.creds,
+    creds: state.creds,
     keys: makeCacheableSignalKeyStore
-      ? makeCacheableSignalKeyStore(state.state.keys, logger)
-      : state.state.keys,
+      ? makeCacheableSignalKeyStore(state.keys, logger)
+      : state.keys,
   },
   logger,
   printQRInTerminal: true,
