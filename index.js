@@ -1,5 +1,5 @@
 // ============================================================
-//   ZYROX WHATSAPP BOT — v1.1 (fixed for Baileys 6.7.24)
+//   ZYROX WHATSAPP BOT — v1.1.2 (CRITICAL message-handler fix)
 //   Tested locally before push ✓
 // ============================================================
 const Baileys = require('@whiskeysockets/baileys');
@@ -69,17 +69,22 @@ const cleanJid = (jid) => {
 const isGroup = (jid) => !!jid && jid.endsWith('@g.us');
 const ignoreJid = (jid) => !jid || jid === 'status@broadcast' || jid.includes('@newsletter') || jid.includes('@lid') || jid.includes('@broadcast');
 
-const sendText = (jid, text, opts = {}) => sock.sendMessage(jid, { text: String(text).slice(0, 4000), ...opts });
-const sendReact = (jid, key, emoji) => sock.sendMessage(jid, { react: { text: emoji, key } });
-const sendImage = (jid, buf, caption = '', opts = {}) => sock.sendMessage(jid, { image: buf, caption, ...opts });
-const sendVideo = (jid, buf, caption = '', opts = {}) => sock.sendMessage(jid, { video: buf, caption, ...opts });
-const sendAudio = (jid, buf, ptt = false) => sock.sendMessage(jid, { audio: buf, mimetype: 'audio/mpeg', ptt });
-const sendSticker = (jid, buf, opts = {}) => sock.sendMessage(jid, {
+// Wrapped send helpers that also log a one-line receipt so you can SEE replies in the terminal.
+const _logReply = (jid, label, preview) => {
+  const to = jid.split('@')[0];
+  console.log(`\x1b[32m[↩️]\x1b[0m → ${to}: [${label}] ${String(preview||'').slice(0,60).replace(/\n/g,' | ')}`);
+};
+const sendText = (jid, text, opts = {}) => { _logReply(jid,'text',text); return sock.sendMessage(jid, { text: String(text).slice(0, 4000), ...opts }); };
+const sendReact = (jid, key, emoji) => { _logReply(jid,'react',emoji); return sock.sendMessage(jid, { react: { text: emoji, key } }); };
+const sendImage = (jid, buf, caption = '', opts = {}) => { _logReply(jid,'image',caption); return sock.sendMessage(jid, { image: buf, caption, ...opts }); };
+const sendVideo = (jid, buf, caption = '', opts = {}) => { _logReply(jid,'video',caption); return sock.sendMessage(jid, { video: buf, caption, ...opts }); };
+const sendAudio = (jid, buf, ptt = false) => { _logReply(jid,'audio',ptt?'ptt':'audio'); return sock.sendMessage(jid, { audio: buf, mimetype: 'audio/mpeg', ptt }); };
+const sendSticker = (jid, buf, opts = {}) => { _logReply(jid,'sticker',''); return sock.sendMessage(jid, {
   sticker: buf, mimetype: 'image/webp',
   isAnimated: !!opts.isAnimated,
   stickerAuthor: opts.author || 'ZYROX',
   stickerName: opts.pack || 'ZYROX Stickers',
-});
+}); };
 
 // Use the OFFICIAL downloadMediaMessage (replaces our manual downloadContentFromMessage logic)
 async function downloadMedia(msg) {
@@ -110,6 +115,9 @@ function getMessageText(msg) {
     content.imageMessage?.caption ||
     content.videoMessage?.caption ||
     content.documentMessage?.caption ||
+    content.buttonsMessage?.contentText ||
+    content.listMessage?.description ||
+    content.templateMessage?.hydratedTemplate?.hydratedContentText ||
     ''
   );
 }
@@ -207,12 +215,24 @@ async function connect() {
       try {
         if (!msg?.key) continue;
         if (ignoreJid(msg.key.remoteJid)) continue;
-        // Messages without a decrypted `message` are stub/ciphertext/resend markers — skip.
-        // (Previously these still hit isRealMessage which returned false, but in some
-        // Baileys builds stubType = 0 so they'd fall through to our handler with no text.)
-        if (!msg.message || msg.messageStubType) continue;
+        // Skip our own messages
         if (msg.key.fromMe) continue;
-        if (!isRealMessage(msg, msg.key.remoteJid)) continue;
+        // Messages without a decrypted `message` payload are stub/ciphertext/retry markers
+        if (!msg.message) continue;
+        // Skip poll-votes / reactions / protocol msgs / message-edits-at-proto level
+        const _norm = extractMessageContent(msg.message);
+        if (_norm?.protocolMessage && !_norm?.editedMessage) continue;
+        // Skip Baileys stub types (retry/resend/ciphertext placeholders)
+        if (msg.messageStubType && msg.messageStubType !== 0) continue;
+
+        // --- IMPORTANT: isRealMessage signature is (message, ME_ID) ---
+        // Earlier versions passed `msg.key.remoteJid` (the CHAT jid) as meId, which is wrong.
+        // meId must be the BOT's own JID. When connected we pass sock.user.id; before
+        // connection open we fall back to the creds me.id or accept the message.
+        const meId = sock?.user?.id || (sock?.authState?.creds?.me?.id);
+        if (meId && !isRealMessage(msg, meId)) continue;
+        // For safety, if no meId yet (e.g. just booting) still check that there is content
+        if (!_norm || !getContentType(_norm)) continue;
 
         const from = cleanJid(msg.key.remoteJid);
         const participant = cleanJid(msg.key.participant || msg.key.remoteJid);

@@ -23,7 +23,7 @@ ZWA_AUTH="$ZWA_DIR/auth"
 ZWA_LOG="$ZWA_DIR/bot.log"
 ZWA_PID_FILE="$ZWA_DIR/bot.pid"
 ZWA_NODE="$PREFIX/bin/node"
-VERSION="1.1.1"
+VERSION="1.1.2"
 
 # ---- Colors (neon) ----
 if [ -t 1 ] && command -v tput >/dev/null 2>&1 && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then

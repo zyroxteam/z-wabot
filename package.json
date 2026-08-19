@@ -1,6 +1,6 @@
 {
   "name": "zyrox-wabot",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "🤖 ZYROX WHATSAPP BOT — AI + Stickers + Groups + Media (Termux)",
   "main": "index.js",
   "scripts": {
