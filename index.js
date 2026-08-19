@@ -260,11 +260,18 @@ sock = makeWASocket({
   },
   logger,
   printQRInTerminal: true,
-  // Browser identity — plain array works in all Baileys versions
-  browser: Browsers && typeof Browsers.app === 'function' ? Browsers.app('ZYROX-BOT', 'desktop') : ['ZYROX-BOT', 'Desktop', '1.0'],
+  browser: ['ZYROX-BOT', 'Desktop', '1.0'],
   syncFullHistory: false,
   markOnlineOnConnect: true,
-  generateHighQualityLinkPreview: false
+  generateHighQualityLinkPreview: false,
+  // Required by Baileys v6.7+ for decrypting messages properly
+  getMessage: async (key) => {
+    if (store && store.loadMessages) {
+      const m = await store.loadMessage(key.remoteJid, key.id);
+      return m?.message || undefined;
+    }
+    return undefined;
+  }
 });
 
 if (store && typeof store.bind === 'function') store.bind(sock.ev);
@@ -320,25 +327,27 @@ if (store && typeof store.bind === 'function') store.bind(sock.ev);
   });
 
   sock.ev.on('messages.upsert', async (m) => {
-    if (m.type !== 'notify' && m.type !== 'append') return;
+    if (m.type !== 'notify' && m.type !== 'append') {
+      // debug: log unknown types
+      if (process.env.ZYROX_DEBUG) console.log(`[upsert type=${m.type}] msgs=${(m.messages||[]).length}`);
+    }
     for (const msg of m.messages || []) {
-      // Skip: own messages, status, newsletters, protocol/receipts
       if (!msg?.key) continue;
       if (msg.key.remoteJid && isIgnoredJid(msg.key.remoteJid)) continue;
-      if (msg.key.fromMe === true) continue;
-      if (msg.status === 'PENDING' || msg.status === 'ERROR') continue;
-      // Unwrap nested messages (view-once/ephemeral/edited)
+      // Unwrap nested messages
       const inner = extractInner(msg.message);
       if (!inner.mtype) continue;
-      // Protocol messages? skip
       if (inner.mtype === 'protocolMessage' || inner.mtype === 'senderKeyDistributionMessage') continue;
-      // Debug: print inbound to terminal
+      if (msg.status === 'PENDING' || msg.status === 'ERROR') continue;
       const jid = cleanJid(msg.key.remoteJid);
       const sender = cleanJid(msg.key.participant || msg.key.remoteJid);
       const txt = extractText(msg);
-      if (process.argv.includes('--dev') || process.env.ZYROX_DEBUG) {
-        console.log(`[MSG] ${sender.split('@')[0]} → ${jid}: ${txt.slice(0,80)} (${inner.mtype})`);
+      // Always log inbound user messages to terminal so user sees bot is alive
+      if (!msg.key.fromMe) {
+        const preview = (txt || '['+inner.mtype+']').slice(0,60);
+        console.log(`\x1b[36m[📩]\x1b[0m ${sender.split('@')[0]}: ${preview}`);
       }
+      if (msg.key.fromMe === true) continue;
       try {
         await handleMessage(msg, inner);
       } catch (e) {
