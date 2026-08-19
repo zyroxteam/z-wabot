@@ -1,0 +1,11 @@
+node_modules/
+auth/
+temp/
+db.json
+bot.log
+.env
+.DS_Store
+*.swp
+.vercel/
+npm-debug.log
+.vscode/

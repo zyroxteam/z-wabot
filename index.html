@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>🤖 ZYROX WA BOT — Termux WhatsApp AI Bot</title>
+<meta name="description" content="Free WhatsApp bot for Termux: AI chat (Gemini), sticker maker, YouTube/IG/TT downloader, group security, anti-link, and more. 1-command install."/>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#05020a;--bg2:#0a0318;--neon:#00ffd1;--pink:#ff3cac;--purp:#784ba0;
+    --yel:#ffde59;--red:#ff2e63;--blue:#2b86c5;--card:rgba(255,255,255,0.05);
+    --clay:rgba(255,255,255,0.08);
+  }
+  html,body{background:var(--bg);color:#fff;font-family:'Segoe UI',system-ui,sans-serif;overflow-x:hidden}
+  body{min-height:100vh;background:radial-gradient(ellipse at 20% -10%,rgba(120,75,160,.35),transparent 60%),radial-gradient(ellipse at 80% 10%,rgba(255,60,172,.25),transparent 55%),radial-gradient(ellipse at 50% 100%,rgba(0,255,209,.2),transparent 60%),var(--bg)}
+
+  /* Matrix rain */
+  canvas#matrix{position:fixed;inset:0;z-index:0;opacity:.18;pointer-events:none}
+
+  /* Nav */
+  nav{position:sticky;top:0;z-index:20;backdrop-filter:blur(14px);background:rgba(5,2,10,.6);border-bottom:1px solid rgba(255,255,255,.07);padding:14px 24px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
+  .logo{font-weight:900;font-size:22px;background:linear-gradient(90deg,var(--neon),var(--pink));-webkit-background-clip:text;background-clip:text;color:transparent;letter-spacing:1px}
+  .logo span{font-size:22px;margin-right:4px}
+  .links a{color:#ccc;margin:0 10px;text-decoration:none;font-weight:600;transition:.2s}
+  .links a:hover{color:var(--neon)}
+  .ghbtn{background:linear-gradient(135deg,var(--neon),var(--blue));color:#000;font-weight:800;padding:10px 18px;border-radius:12px;text-decoration:none;box-shadow:0 8px 24px rgba(0,255,209,.25)}
+
+  /* Hero */
+  .hero{position:relative;z-index:1;padding:60px 20px 40px;text-align:center;max-width:1100px;margin:auto}
+  .badge{display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(0,255,209,.12);border:1px solid rgba(0,255,209,.35);color:var(--neon);font-weight:700;font-size:13px;margin-bottom:18px}
+  h1{font-size:clamp(40px,7vw,78px);font-weight:900;line-height:1.05;margin-bottom:18px;background:linear-gradient(90deg,#fff,var(--neon) 40%,var(--pink) 70%,#fff);-webkit-background-clip:text;background-clip:text;color:transparent;filter:drop-shadow(0 4px 22px rgba(255,60,172,.3))}
+  .sub{font-size:clamp(15px,2vw,20px);color:#cfd0d8;max-width:720px;margin:0 auto 28px;line-height:1.6}
+  .cta{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-bottom:40px}
+  .btn{padding:14px 24px;border-radius:14px;font-weight:800;text-decoration:none;font-size:16px;border:none;cursor:pointer;transition:.2s;display:inline-flex;align-items:center;gap:8px}
+  .btn-primary{background:linear-gradient(135deg,var(--pink),var(--purp));color:#fff;box-shadow:0 10px 30px rgba(255,60,172,.35)}
+  .btn-primary:hover{transform:translateY(-2px);box-shadow:0 14px 38px rgba(255,60,172,.5)}
+  .btn-neon{background:linear-gradient(135deg,var(--neon),#00b8ff);color:#000;box-shadow:0 10px 30px rgba(0,255,209,.3)}
+  .btn-neon:hover{transform:translateY(-2px)}
+
+  /* Install box */
+  .install{position:relative;z-index:1;max-width:780px;margin:20px auto 0;background:linear-gradient(135deg,rgba(0,0,0,.55),rgba(30,10,40,.55));border:1px solid rgba(0,255,209,.25);border-radius:22px;padding:24px;box-shadow:0 20px 60px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.06);text-align:left}
+  .install h3{color:var(--neon);font-size:15px;letter-spacing:2px;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+  .term{position:relative;background:#000;border-radius:14px;padding:18px 20px;font-family:'Cascadia Code',Consolas,monospace;font-size:15px;color:#7CFFCB;border:1px solid rgba(0,255,209,.2);overflow-x:auto}
+  .term::before{content:"● ● ●";color:#555;font-size:10px;display:block;margin-bottom:10px;letter-spacing:4px}
+  .copy-btn{position:absolute;top:14px;right:14px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);color:#fff;padding:6px 12px;border-radius:8px;cursor:pointer;font-size:12px;transition:.2s}
+  .copy-btn:hover{background:var(--neon);color:#000}
+
+  /* Marquee */
+  .marquee-wrap{position:relative;z-index:1;margin:50px 0 30px;overflow:hidden;border-top:1px solid rgba(255,255,255,.05);border-bottom:1px solid rgba(255,255,255,.05);background:rgba(255,255,255,.02);padding:14px 0}
+  .marquee{display:flex;gap:40px;animation:scroll 30s linear infinite;white-space:nowrap;font-weight:800;font-size:18px}
+  .marquee span{color:#fff;opacity:.85}
+  .marquee .neon-p{color:var(--pink);text-shadow:0 0 12px var(--pink)}
+  .marquee .neon-c{color:var(--neon);text-shadow:0 0 12px var(--neon)}
+  @keyframes scroll{to{transform:translateX(-50%)}}
+
+  /* Features */
+  section{position:relative;z-index:1;max-width:1100px;margin:0 auto;padding:50px 20px}
+  .section-title{text-align:center;font-size:clamp(28px,4vw,44px);font-weight:900;margin-bottom:12px;background:linear-gradient(90deg,var(--neon),var(--pink));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .section-sub{text-align:center;color:#bbb;margin-bottom:40px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px}
+  .card{background:var(--card);border-radius:22px;padding:24px;border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(10px);transition:.25s;position:relative;overflow:hidden}
+  .card::before{content:"";position:absolute;inset:0;border-radius:22px;background:radial-gradient(circle at top left,rgba(0,255,209,.12),transparent 50%);pointer-events:none}
+  .card:hover{transform:translateY(-4px);border-color:rgba(255,60,172,.4);box-shadow:0 18px 40px rgba(255,60,172,.2)}
+  .emoji{font-size:36px;display:block;margin-bottom:12px}
+  .card h4{font-size:20px;margin-bottom:8px}
+  .card p{color:#b9bbc6;line-height:1.5;font-size:14px}
+  .tag{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;margin-top:10px;margin-right:4px}
+  .tag-pink{background:rgba(255,60,172,.15);color:var(--pink);border:1px solid rgba(255,60,172,.3)}
+  .tag-cyan{background:rgba(0,255,209,.12);color:var(--neon);border:1px solid rgba(0,255,209,.3)}
+  .tag-yel{background:rgba(255,222,89,.12);color:var(--yel);border:1px solid rgba(255,222,89,.3)}
+
+  /* CLI demo */
+  .cli-wrap{position:relative;z-index:1;max-width:900px;margin:10px auto;background:linear-gradient(180deg,#000,#07031a);border-radius:20px;padding:20px;border:1px solid rgba(255,255,255,.08);box-shadow:0 30px 80px rgba(0,0,0,.5)}
+  .cli-top{display:flex;gap:6px;margin-bottom:14px}
+  .dot{width:12px;height:12px;border-radius:50%}
+  .d-r{background:#ff5f56}.d-y{background:#ffbd2e}.d-g{background:#27c93f}
+  .cli-body{font-family:'Cascadia Code',Consolas,monospace;font-size:14px;line-height:1.7;color:#c9ffed}
+  .cli-body .p{color:var(--pink);font-weight:700}
+  .cli-body .c{color:var(--neon)}
+  .cli-body .y{color:var(--yel)}
+  .cli-body .d{color:#666}
+
+  /* Stats */
+  .stats{display:flex;justify-content:center;gap:30px;flex-wrap:wrap;margin:30px 0}
+  .stat{text-align:center;padding:20px 28px;border-radius:18px;background:var(--card);border:1px solid rgba(255,255,255,.08);min-width:160px}
+  .stat .n{font-size:36px;font-weight:900;background:linear-gradient(90deg,var(--neon),var(--pink));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .stat .l{color:#9aa;font-size:13px;margin-top:4px}
+
+  /* Commands table */
+  .cmd-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px;max-width:1000px;margin:auto}
+  .cmd{display:flex;gap:10px;align-items:baseline;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:10px 14px}
+  .cmd code{color:var(--neon);font-weight:800;font-family:Consolas,monospace;font-size:13px;white-space:nowrap}
+  .cmd span{color:#bbb;font-size:13px}
+
+  /* Footer */
+  footer{position:relative;z-index:1;text-align:center;padding:50px 20px 30px;color:#888;font-size:14px;border-top:1px solid rgba(255,255,255,.06);margin-top:40px}
+  footer .zy{background:linear-gradient(90deg,var(--neon),var(--pink));-webkit-background-clip:text;background-clip:text;color:transparent;font-weight:900}
+
+  @media (max-width:600px){
+    .links{display:none}
+    .cta .btn{padding:12px 18px;font-size:14px}
+    .term{font-size:13px}
+  }
+</style>
+</head>
+<body>
+<canvas id="matrix"></canvas>
+
+<nav>
+  <div class="logo"><span>🤖</span> ZYROX <span style="color:var(--neon);-webkit-text-fill-color:var(--neon)">WA BOT</span></div>
+  <div class="links">
+    <a href="#features">Features</a>
+    <a href="#install">Install</a>
+    <a href="#commands">Commands</a>
+    <a href="https://github.com/zyroxteam/z-wabot" target="_blank">GitHub</a>
+  </div>
+  <a class="ghbtn" href="https://github.com/zyroxteam/z-wabot" target="_blank">⭐ GitHub</a>
+</nav>
+
+<div class="hero">
+  <div class="badge">🔥 v1.0 • Termux • Free Forever</div>
+  <h1>Apna WhatsApp Bot,<br/>Apne Phone Pe.</h1>
+  <p class="sub">AI chat, instant stickers, YouTube/Insta/TikTok download, group security, anti-link, gaali filter — sab <b style="color:var(--neon)">1 command mein</b>. Apne phone pe chalao, kisi cloud server ki zaroorat nahi. 💯</p>
+  <div class="cta">
+    <a class="btn btn-primary" href="#install">⚡ 1-Click Install</a>
+    <a class="btn btn-neon" href="#features">✨ Features Dekho</a>
+  </div>
+
+  <div id="install" class="install">
+    <h3>▼ TERMUX — YE COMMAND CHALA DO BAS</h3>
+    <div style="position:relative">
+      <button class="copy-btn" onclick="copyCmd(this)">📋 Copy</button>
+      <div class="term"><span id="cmd">bash &lt;(curl -sL https://zyrox-wabot.vercel.app/install.sh)</span></div>
+    </div>
+    <p style="margin-top:14px;color:#9aa;font-size:13px">
+      ⚡ Install hone ke baad bas <b style="color:#fff">zwa</b> type karo, QR scan karo WhatsApp se — bas bot tumhara ho jayega!
+    </p>
+  </div>
+</div>
+
+<div class="marquee-wrap">
+  <div class="marquee">
+    <span>🤖 <span class="neon-p">GEMINI AI</span> HINGLISH MEIN</span>
+    <span>🎨 <span class="neon-c">INSTANT STICKERS</span></span>
+    <span>📺 YOUTUBE / INSTA / TIKTOK / FB / TWITTER</span>
+    <span>👥 GROUP SECURITY <span class="neon-p">ANTILINK + ANTISPAM</span></span>
+    <span>🔊 <span class="neon-c">HINDI TTS</span></span>
+    <span>⚡ TERMUX PE 1-CMD INSTALL</span>
+    <span>🛡️ <span class="neon-p">100% FREE, OPEN SOURCE</span></span>
+    <span>🤖 <span class="neon-p">GEMINI AI</span> HINGLISH MEIN</span>
+    <span>🎨 <span class="neon-c">INSTANT STICKERS</span></span>
+    <span>📺 YOUTUBE / INSTA / TIKTOK / FB / TWITTER</span>
+    <span>👥 GROUP SECURITY <span class="neon-p">ANTILINK + ANTISPAM</span></span>
+    <span>🔊 <span class="neon-c">HINDI TTS</span></span>
+    <span>⚡ TERMUX PE 1-CMD INSTALL</span>
+    <span>🛡️ <span class="neon-p">100% FREE, OPEN SOURCE</span></span>
+  </div>
+</div>
+
+<section id="features">
+  <h2 class="section-title">✨ Sab Kuch Ek Bot Mein</h2>
+  <p class="section-sub">30+ commands • AI-powered • Phone pe hi chalta hai • No subscription</p>
+  <div class="grid">
+    <div class="card">
+      <span class="emoji">💬</span>
+      <h4>Gemini AI Chat</h4>
+      <p>Google Gemini 2.0 se Hinglish mein baat karo. Group mein @mention karo ya private chat. History bhi yaad rakhta hai.</p>
+      <span class="tag tag-pink">AI</span><span class="tag tag-cyan">Hinglish</span>
+    </div>
+    <div class="card">
+      <span class="emoji">🎨</span>
+      <h4>Sticker Studio</h4>
+      <p>Kisi bhi photo/video ko bhejo, reply mein /s likho — instant WhatsApp sticker. Text-quote sticker bhi ban jata hai.</p>
+      <span class="tag tag-cyan">Animated</span><span class="tag tag-yel">512x512</span>
+    </div>
+    <div class="card">
+      <span class="emoji">📺</span>
+      <h4>Media Downloader</h4>
+      <p>YouTube video/mp3, Instagram reels, TikTok, Facebook, Twitter/X — sab direct WhatsApp pe download.</p>
+      <span class="tag tag-pink">HD</span><span class="tag tag-cyan">No ads</span>
+    </div>
+    <div class="card">
+      <span class="emoji">🛡️</span>
+      <h4>Group Security</h4>
+      <p>Anti-link, anti-spam, gaali/bad-word filter. Auto-delete + warn system. 3 warns = kick.</p>
+      <span class="tag tag-pink">Admin</span><span class="tag tag-yel">Auto-mod</span>
+    </div>
+    <div class="card">
+      <span class="emoji">👥</span>
+      <h4>Group Tools</h4>
+      <p>Tagall, kick/add/promote/demote, polls, mute/unmute, custom welcome, group info, invite link — sab admin ke liye.</p>
+      <span class="tag tag-cyan">Admin toolkit</span>
+    </div>
+    <div class="card">
+      <span class="emoji">🔊</span>
+      <h4>Hindi TTS</h4>
+      <p>/tts likh ke hindi/english mein baat sunao. Text ko voice note bana ke bhejta hai.</p>
+      <span class="tag tag-yel">Voice</span>
+    </div>
+    <div class="card">
+      <span class="emoji">⏰</span>
+      <h4>Reminders</h4>
+      <p>/schedule 22:30 Pani pi lo — time pe tumhe tag karke yaad dilaega. Minutes/hours relative bhi.</p>
+      <span class="tag tag-pink">Scheduler</span>
+    </div>
+    <div class="card">
+      <span class="emoji">🧰</span>
+      <h4>Utility Pack</h4>
+      <p>Translator, QR generator, weather, calculator, URL shortener, bot stats, AI history clear — aur bahut kuch.</p>
+      <span class="tag tag-cyan">All-in-one</span>
+    </div>
+  </div>
+</section>
+
+<div class="stats">
+  <div class="stat"><div class="n">30+</div><div class="l">Commands</div></div>
+  <div class="stat"><div class="n">100%</div><div class="l">Free & Open Source</div></div>
+  <div class="stat"><div class="n">0₹</div><div class="l">No Subscription</div></div>
+  <div class="stat"><div class="n">Phone</div><div class="l">Server = Your Phone</div></div>
+</div>
+
+<section style="padding-top:10px">
+  <h2 class="section-title">🎬 Ye Dekho Kaise Dikhta Hai</h2>
+  <div class="cli-wrap">
+    <div class="cli-top"><div class="dot d-r"></div><div class="dot d-y"></div><div class="dot d-g"></div></div>
+    <div class="cli-body">
+      <span class="d">$</span> <span class="p">zwa</span><br/>
+      <span class="c">╔══════════════════════════════════════════╗</span><br/>
+      <span class="c">║</span>   🤖 ZYROX WA BOT v1.0                    <span class="c">║</span><br/>
+      <span class="c">╚══════════════════════════════════════════╝</span><br/>
+      <span class="d">[1] Start bot (foreground)  →  QR scan dikhega</span><br/>
+      <span class="d">[2] Start bot (background)</span><br/>
+      <span class="d">[3] Stop bot</span><br/><br/>
+      <span class="y">zwa » 1</span><br/><br/>
+      <span class="c">▸ Connecting to WhatsApp...</span><br/>
+      <span class="p">█▀▀▀ QR CODE DIKHEGA, PHONE SE SCAN KARO</span><br/>
+      <span class="c">█</span> ✅ Connected! Bot ready as "Rahul's Bot"<br/><br/>
+      <span class="d">[WhatsApp pe]</span><br/>
+      <span class="y">You: /ai kal Mumbai mein barish hogi?</span><br/>
+      <span class="c">🤖 Bhai mausam to thoda cloudy dikh raha hai, umbrella rakh lena!</span><br/><br/>
+      <span class="y">You: (reply to photo) /s</span><br/>
+      <span class="p">[ 🎨 Sticker sent! ]</span>
+    </div>
+  </div>
+</section>
+
+<section id="commands" style="padding-top:30px">
+  <h2 class="section-title">⌨️ Popular Commands</h2>
+  <p class="section-sub">Sab commands WhatsApp mein bot ko bhejo — group/private dono mein kaam karte hain</p>
+  <div class="cmd-grid">
+    <div class="cmd"><code>/ai</code><span>AI se baat karo</span></div>
+    <div class="cmd"><code>/s</code><span>Photo/video → sticker (reply karo)</span></div>
+    <div class="cmd"><code>/qc</code><span>Quote sticker</span></div>
+    <div class="cmd"><code>/yt</code><span>YouTube video download</span></div>
+    <div class="cmd"><code>/yta</span><span>YouTube to MP3</span></div>
+    <div class="cmd"><code>/ig /tt /fb /tw</code><span>Reels/TikTok/FB/Twitter</span></div>
+    <div class="cmd"><code>/tagall</code><span>Sabko tag (admin)</span></div>
+    <div class="cmd"><code>/kick /add</code><span>Member hatao/jodo</span></div>
+    <div class="cmd"><code>/antilink on</span><span>Link auto-delete</span></div>
+    <div class="cmd"><code>/badword on</span><span>Gaali filter</span></div>
+    <div class="cmd"><code>/antispam on</span><span>Spam protection</span></div>
+    <div class="cmd"><code>/welcome msg</span><span>Custom welcome</span></div>
+    <div class="cmd"><code>/poll q|a|b</code><span>Poll banayo</span></div>
+    <div class="cmd"><code>/tts namaste</span><span>Hindi voice note</span></div>
+    <div class="cmd"><code>/tr hi hello</span><span>Translate</span></div>
+    <div class="cmd"><code>/weather delhi</span><span>Mausam</span></div>
+    <div class="cmd"><code>/calc 2+2*3</span><span>Calculator</span></div>
+    <div class="cmd"><code>/qr text</span><span>QR code</span></div>
+    <div class="cmd"><code>/schedule 22:30 msg</span><span>Reminder</span></div>
+    <div class="cmd"><code>/ping</code><span>Latency check</span></div>
+    <div class="cmd"><code>/stats</span><span>Bot stats</span></div>
+    <div class="cmd"><code>/menu</span><span>Poora list</span></div>
+  </div>
+  <p class="section-sub" style="margin-top:24px">💡 Group mein bot ko @mention karo to AI seedha reply karega, command ki zaroorat nahi!</p>
+</section>
+
+<section style="text-align:center;padding:40px 20px">
+  <h2 class="section-title">Abhi Install Kar Lo 🚀</h2>
+  <p class="section-sub">2 minute mein chalu ho jayega</p>
+  <div class="cta" style="margin-top:10px">
+    <a class="btn btn-primary" href="#install">⚡ Copy Install Command</a>
+    <a class="btn btn-neon" href="https://github.com/zyroxteam/z-wabot" target="_blank">📂 GitHub Source</a>
+  </div>
+</section>
+
+<footer>
+  Made with 💜 by <span class="zy">ZYROX TEAM</span><br/>
+  <span style="color:#666;font-size:12px;margin-top:6px;display:inline-block">Part of ZYROX ecosystem — ZYROX Antivirus • ZYROX Uptime • ZYROX Bolo Bhai • ZYROX WA Bot</span>
+</footer>
+
+<script>
+// Matrix rain
+const canvas = document.getElementById('matrix');
+const ctx = canvas.getContext('2d');
+function resize(){canvas.width=innerWidth;canvas.height=innerHeight}
+resize();addEventListener('resize',resize);
+const chars='アイウエオカキクケコサシスセソタチツテトナニヌネノ0123456789ZYROX<>/{}';
+const fontSize=14;const columns=Math.floor(canvas.width/fontSize);
+const drops=Array(columns).fill(1);
+function draw(){
+  ctx.fillStyle='rgba(5,2,10,0.06)';ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.font=fontSize+'px monospace';
+  for(let i=0;i<drops.length;i++){
+    const ch=chars[Math.floor(Math.random()*chars.length)];
+    ctx.fillStyle=Math.random()>.97?'#ff3cac':'#00ffd1';
+    ctx.fillText(ch,i*fontSize,drops[i]*fontSize);
+    if(drops[i]*fontSize>canvas.height&&Math.random()>.975)drops[i]=0;
+    drops[i]++;
+  }
+}
+setInterval(draw,55);
+
+// Copy command
+function copyCmd(btn){
+  const t=document.getElementById('cmd').textContent;
+  navigator.clipboard.writeText(t).then(()=>{
+    btn.textContent='✅ Copied!';setTimeout(()=>btn.textContent='📋 Copy',1800);
+  });
+}
+
+// Smooth scroll
+document.querySelectorAll('a[href^="#"]').forEach(a=>{
+  a.addEventListener('click',e=>{
+    const id=a.getAttribute('href').slice(1);
+    const el=document.getElementById(id);
+    if(el){e.preventDefault();el.scrollIntoView({behavior:'smooth',block:'start'})}
+  });
+});
+</script>
+</body>
+</html>

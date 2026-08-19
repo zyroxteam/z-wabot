@@ -1,0 +1,19 @@
+{
+  "bot_name": "ZYROX-WA",
+  "prefix": "/",
+  "owner_number": "910000000000",
+  "gemini_keys": [
+    "AIzaSyDHJqNxqgVjYf8f2R8UcOY3r3Nq9gZfBdE",
+    "AIzaSyB4Z7Xy1x9kQp8vN0Rm5kL3aBc2dEeFfGg"
+  ],
+  "ai_prompt": "Tum ZYROX naam ka friendly desi AI WhatsApp bot ho. Hinglish mein jawab do — short, mast, desi slang allowed. Hamesha helpful raho, English/Hindi mix. Mat bol ki tum AI ho, bas dost ki tarah baat karo. Agar koi gaali de to politely ignore karo ya light joke maar do. Emoji use karo lekin zyada nahi.",
+  "max_ai_history": 6,
+  "auto_ai_groups": true,
+  "auto_ai_pm": false,
+  "sticker_quality": 80,
+  "antilink_default": false,
+  "antispam_default": false,
+  "badword_default": false,
+  "temp_dir": "./temp",
+  "auth_dir": "./auth"
+}

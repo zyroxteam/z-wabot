@@ -1,0 +1,13 @@
+{
+  "cleanUrls": true,
+  "trailingSlash": false,
+  "builds": [
+    { "src": "index.html", "use": "@vercel/static" },
+    { "src": "install.sh", "use": "@vercel/static" },
+    { "src": "README.md", "use": "@vercel/static" }
+  ],
+  "routes": [
+    { "src": "/install.sh", "dest": "/install.sh", "headers": { "content-type": "text/x-shellscript; charset=utf-8" } },
+    { "src": "/(.*)", "dest": "/index.html" }
+  ]
+}

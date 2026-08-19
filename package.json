@@ -1,0 +1,26 @@
+{
+  "name": "zyrox-wabot",
+  "version": "1.0.0",
+  "description": "🤖 ZYROX WHATSAPP BOT — AI + Stickers + Groups + Media (Termux)",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zyroxteam/z-wabot.git"
+  },
+  "keywords": ["whatsapp", "bot", "baileys", "gemini", "ai", "sticker", "termux", "zyrox"],
+  "author": "ZYROX TEAM",
+  "license": "MIT",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.16",
+    "@hapi/boom": "^10.0.1",
+    "qrcode-terminal": "^0.12.0",
+    "fluent-ffmpeg": "^2.1.3",
+    "pino": "^8.21.0",
+    "pino-pretty": "^10.3.1",
+    "node-fetch": "^2.7.0",
+    "form-data": "^4.0.0"
+  }
+}
