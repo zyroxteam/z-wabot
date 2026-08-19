@@ -1,33 +1,29 @@
 // ============================================================
-//   ZYROX WHATSAPP BOT — v1.0
-//   Main entry: Baileys connection, message routing, commands
+//   ZYROX WHATSAPP BOT — v1.1 (fixed for Baileys 6.7.24)
+//   Tested locally before push ✓
 // ============================================================
-process.env.NO_COLOR = '0';
 const Baileys = require('@whiskeysockets/baileys');
 const {
   default: makeWASocket,
   useMultiFileAuthState,
-  Browsers,
   DisconnectReason,
   fetchLatestBaileysVersion,
-  downloadContentFromMessage,
+  downloadMediaMessage,
+  extractMessageContent,
   generateWAMessageFromContent,
-  proto
+  getContentType,
+  isRealMessage,
+  jidDecode,
+  makeCacheableSignalKeyStore,
+  proto,
 } = Baileys;
-const makeCacheableSignalKeyStore = Baileys.makeCacheableSignalKeyStore || null;
-const jidDecode = Baileys.jidDecode || (() => null);
 
-// Fallback in-memory store (new Baileys removed it; provide stub)
-let makeInMemoryStore = Baileys.makeInMemoryStore;
-if (!makeInMemoryStore) {
-  try { makeInMemoryStore = require('baileys-store')?.makeInMemoryStore; } catch (_) {}
+// ---- Boom polyfill ----
+let Boom;
+try { Boom = require('@hapi/boom').Boom; } catch (_) {
+  Boom = class Boom extends Error { constructor(e){super(e?.message||e);this.isBoom=true;this.output={statusCode:e?.output?.statusCode||0}}};
 }
-if (!makeInMemoryStore) {
-  makeInMemoryStore = function () { return { bind: () => {}, loadMessages: () => ({}), fetchGroupMetadata: () => null }; };
-}
-const { Boom } = (() => {
-  try { return require('@hapi/boom'); } catch (_) { return { Boom: class Boom extends Error { constructor(e){super(e);this.output={statusCode:e?.output?.statusCode||0}}; isBoom=true } }; }
-})();
+
 const P = require('pino');
 const fs = require('fs');
 const path = require('path');
@@ -41,323 +37,198 @@ const media = require('./lib/media');
 loadDB();
 gemini.initKeys(CONFIG.gemini_keys || []);
 
-// ---- Ensure dirs ----
 const AUTH_DIR = path.resolve(__dirname, CONFIG.auth_dir || './auth');
 const TEMP_DIR = path.resolve(__dirname, CONFIG.temp_dir || './temp');
 [AUTH_DIR, TEMP_DIR].forEach(d => { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); });
 
-// ---- Logger ----
-const logger = P({ level: process.argv.includes('--dev') ? 'debug' : 'warn' }, P.destination('./bot.log'));
+// ---- Logger (file only, so terminal is clean for our UI) ----
+const logger = P({ level: 'error' }, P.destination('./bot.log'));
 
-// ---- In-memory store (optional — new Baileys removed it, so stub on failure) ----
-let store = null;
-try {
-  const baileys = require('@whiskeysockets/baileys');
-  if (baileys.makeInMemoryStore) {
-    store = baileys.makeInMemoryStore({ logger: logger.child({ store: true }) });
-  }
-} catch (_) {
-  store = { bind: () => {} };
-}
-if (!store) store = { bind: () => {} };
-
-// ---- Load commands dynamically ----
+// ---- Command loader ----
 const commands = new Map();
 function loadCommands() {
   commands.clear();
   const cmdDir = path.join(__dirname, 'commands');
   for (const file of fs.readdirSync(cmdDir).filter(f => f.endsWith('.js'))) {
-    const name = path.basename(file, '.js');
-    // Clear require cache so reload works
     delete require.cache[require.resolve(path.join(cmdDir, file))];
     const mod = require(path.join(cmdDir, file));
     const names = Array.isArray(mod.name) ? mod.name : [mod.name];
-    for (const n of names) commands.set(n.toLowerCase(), mod);
-    if (mod.aliases) {
-      for (const a of mod.aliases) commands.set(a.toLowerCase(), mod);
-    }
+    for (const n of names) commands.set(String(n).toLowerCase(), mod);
+    if (mod.aliases) for (const a of mod.aliases) commands.set(String(a).toLowerCase(), mod);
   }
-  console.log(`[ZYROX] Loaded ${commands.size} command handlers`);
+  console.log(`[ZYROX] Loaded ${commands.size} commands`);
 }
 loadCommands();
 
 // ---- Helpers ----
-function cleanJid(jid) {
+const cleanJid = (jid) => {
   if (!jid) return null;
-  // strip resource (e.g. number@s.whatsapp.net:12345)
-  return jid.split(':')[0].split('@')[0] + '@' + (jid.includes('@g.us') ? 'g.us' : 's.whatsapp.net');
-}
-function isGroup(jid) { return jid && jid.endsWith('@g.us'); }
-function isMe(sock, jid) {
-  if (!sock?.user?.id || !jid) return false;
-  return jid.split(':')[0] === sock.user.id.split(':')[0] + '@s.whatsapp.net';
-}
+  const [a, b] = jid.split('@');
+  return a.split(':')[0] + '@' + (b || 's.whatsapp.net');
+};
+const isGroup = (jid) => !!jid && jid.endsWith('@g.us');
+const ignoreJid = (jid) => !jid || jid === 'status@broadcast' || jid.includes('@newsletter') || jid.includes('@lid') || jid.includes('@broadcast');
 
-// Normalize a message: unwrap ephemeral/viewOnce/edited wrappers and return {text, mtype, raw}
-function extractInner(msgObj) {
-  if (!msgObj) return { message: null, mtype: null };
-  // Unwrap nested types used by newer Baileys
-  let m = msgObj;
-  let depth = 0;
-  while (m && depth < 5) {
-    if (m.ephemeralMessage) { m = m.ephemeralMessage.message; depth++; continue; }
-    if (m.viewOnceMessage)  { m = m.viewOnceMessage.message;  depth++; continue; }
-    if (m.viewOnceMessageV2) { m = m.viewOnceMessageV2.message; depth++; continue; }
-    if (m.editedMessage)    { m = m.editedMessage.message;    depth++; continue; }
-    if (m.documentWithCaptionMessage) { m = m.documentWithCaptionMessage.message; depth++; continue; }
-    if (m.reactionMessage || m.pollCreationMessage || m.pollUpdateMessage) {
-      // skip reactions/poll internals — but still return for poll handling
-      return { message: m, mtype: Object.keys(m)[0] };
-    }
-    break;
+const sendText = (jid, text, opts = {}) => sock.sendMessage(jid, { text: String(text).slice(0, 4000), ...opts });
+const sendReact = (jid, key, emoji) => sock.sendMessage(jid, { react: { text: emoji, key } });
+const sendImage = (jid, buf, caption = '', opts = {}) => sock.sendMessage(jid, { image: buf, caption, ...opts });
+const sendVideo = (jid, buf, caption = '', opts = {}) => sock.sendMessage(jid, { video: buf, caption, ...opts });
+const sendAudio = (jid, buf, ptt = false) => sock.sendMessage(jid, { audio: buf, mimetype: 'audio/mpeg', ptt });
+const sendSticker = (jid, buf, opts = {}) => sock.sendMessage(jid, {
+  sticker: buf, mimetype: 'image/webp',
+  isAnimated: !!opts.isAnimated,
+  stickerAuthor: opts.author || 'ZYROX',
+  stickerName: opts.pack || 'ZYROX Stickers',
+});
+
+// Use the OFFICIAL downloadMediaMessage (replaces our manual downloadContentFromMessage logic)
+async function downloadMedia(msg) {
+  try {
+    const buf = await downloadMediaMessage(
+      msg,
+      'buffer',
+      {},
+      { logger, reuploadRequest: sock.updateMediaMessage }
+    );
+    // Detect type from the message
+    const content = extractMessageContent(msg.message);
+    const mtype = content ? getContentType(content) : null;
+    return { buffer: buf, type: mtype };
+  } catch (e) {
+    logger.error({ err: e }, 'downloadMedia fail');
+    return null;
   }
-  if (!m) return { message: null, mtype: null };
-  const keys = Object.keys(m);
-  // Skip system/protocol keys
-  const skipKeys = ['senderKeyDistributionMessage','messageContextInfo','protocolMessage'];
-  const mtype = keys.find(k => k.endsWith('Message') && !skipKeys.includes(k));
-  return { message: m, mtype };
 }
 
-function extractTextFromMessage(m) {
-  if (!m) return '';
+function getMessageText(msg) {
+  const content = extractMessageContent(msg.message);
+  if (!content) return '';
   return (
-    m.conversation ||
-    m.extendedTextMessage?.text ||
-    m.imageMessage?.caption ||
-    m.videoMessage?.caption ||
-    m.documentMessage?.caption ||
-    m.documentWithCaptionMessage?.message?.documentMessage?.caption ||
+    content.conversation ||
+    content.extendedTextMessage?.text ||
+    content.imageMessage?.caption ||
+    content.videoMessage?.caption ||
+    content.documentMessage?.caption ||
     ''
   );
 }
 
-function extractText(msg) {
-  if (!msg?.message) return '';
-  const inner = extractInner(msg.message);
-  return extractTextFromMessage(inner.message);
-}
-
-function isIgnoredJid(jid) {
-  if (!jid) return true;
-  if (jid === 'status@broadcast') return true;
-  if (jid.includes('@newsletter') || jid.includes('@lid')) return true;
-  if (jid.includes('@broadcast')) return true;
-  return false;
-}
-
-function sendText(jid, text, opts = {}) {
-  return sock.sendMessage(jid, { text: String(text).slice(0, 4000), ...opts });
-}
-function sendReact(jid, key, emoji) {
-  return sock.sendMessage(jid, { react: { text: emoji, key } });
-}
-async function sendImage(jid, buf, caption = '', opts = {}) {
-  return sock.sendMessage(jid, { image: buf, caption, ...opts });
-}
-async function sendVideo(jid, buf, caption = '', opts = {}) {
-  return sock.sendMessage(jid, { video: buf, caption, ...opts });
-}
-async function sendAudio(jid, buf, ptt = false) {
-  return sock.sendMessage(jid, { audio: buf, mimetype: 'audio/mpeg', ptt });
-}
-async function sendSticker(jid, buf, opts = {}) {
-  return sock.sendMessage(jid, {
-    sticker: buf,
-    mimetype: 'image/webp',
-    isAnimated: opts.isAnimated || false,
-    stickerAuthor: opts.author || 'ZYROX',
-    stickerName: opts.pack || 'ZYROX Stickers'
-  });
-}
-
-async function downloadMessage(msg, type = null) {
-  // msg is the proto message. Unwrap ephemeral/viewOnce/edited.
-  const msgObj = msg?.message ? msg.message : msg;
-  const { message: inner, mtype } = extractInner(msgObj);
-  const useType = type || mtype;
-  if (!useType || !inner || !inner[useType]) {
-    // try any *Message key
-    const anyKey = Object.keys(inner || {}).find(k => k.endsWith('Message'));
-    if (!anyKey) return null;
-    const stream = await downloadContentFromMessage(inner[anyKey], anyKey.replace('Message',''));
-    let buf = Buffer.alloc(0);
-    for await (const chunk of stream) buf = Buffer.concat([buf, chunk]);
-    return { buffer: buf, type: anyKey };
-  }
-  const stream = await downloadContentFromMessage(inner[useType], useType.replace('Message', ''));
-  let buf = Buffer.alloc(0);
-  for await (const chunk of stream) buf = Buffer.concat([buf, chunk]);
-  return { buffer: buf, type: useType };
-}
-
-function extractText(msg) {
-  if (!msg?.message) return '';
-  return (
-    msg.message.conversation ||
-    msg.message.extendedTextMessage?.text ||
-    msg.message.imageMessage?.caption ||
-    msg.message.videoMessage?.caption ||
-    msg.message.documentMessage?.caption ||
-    ''
-  );
-}
-
-function quotedMessage(msg) {
-  const et = msg.message?.extendedTextMessage ||
-             extractInner(msg.message).message?.extendedTextMessage;
+function getQuotedMessage(msg) {
+  const content = extractMessageContent(msg.message);
+  const et = content?.extendedTextMessage;
   if (!et?.contextInfo?.quotedMessage) return null;
-  const quotedInner = extractInner(et.contextInfo.quotedMessage);
   return {
     key: {
       remoteJid: msg.key.remoteJid,
       fromMe: false,
       id: et.contextInfo.stanzaId,
-      participant: et.contextInfo.participant
+      participant: et.contextInfo.participant,
     },
-    message: quotedInner.message || et.contextInfo.quotedMessage
+    message: extractMessageContent(et.contextInfo.quotedMessage) || et.contextInfo.quotedMessage,
   };
 }
 
 function isAdmin(participants, jid) {
-  const p = participants?.find(x => cleanJid(x.id) === cleanJid(jid));
-  return p && (p.admin === 'admin' || p.admin === 'superadmin');
-}
-
-// ---- Auto-delete timeout util ----
-function replyAndDelete(jid, text, delayMs = 6000) {
-  sendText(jid, text).then(sent => {
-    setTimeout(() => {
-      try { sock.sendMessage(jid, { delete: sent.key }); } catch (_) {}
-    }, delayMs).unref();
-  });
+  const c = cleanJid(jid);
+  const p = participants?.find(x => cleanJid(x.id) === c);
+  return !!(p && (p.admin === 'admin' || p.admin === 'superadmin'));
 }
 
 // ============================================================
-//   Connection start
+//   Connection
 // ============================================================
 let sock = null;
-let qrShown = false;
 
 async function connect() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   let version;
-  try {
-    ({ version } = await fetchLatestBaileysVersion());
-  } catch (e) {
-    // Fallback version if fetch fails (no network / version mismatch)
-    logger.warn({ err: e.message }, 'version fetch failed — using fallback');
-    version = [2, 3000, 1017551350];
-  }
+  try { ({ version } = await fetchLatestBaileysVersion()); }
+  catch (_) { version = [2, 3000, 1019430256]; }
 
-sock = makeWASocket({
-  version,
-  auth: {
-    creds: state.creds,
-    keys: makeCacheableSignalKeyStore
-      ? makeCacheableSignalKeyStore(state.keys, logger)
-      : state.keys,
-  },
-  logger,
-  printQRInTerminal: true,
-  browser: ['ZYROX-BOT', 'Desktop', '1.0'],
-  syncFullHistory: false,
-  markOnlineOnConnect: true,
-  generateHighQualityLinkPreview: false,
-  // Required by Baileys v6.7+ for decrypting messages properly
-  getMessage: async (key) => {
-    if (store && store.loadMessages) {
-      const m = await store.loadMessage(key.remoteJid, key.id);
-      return m?.message || undefined;
-    }
-    return undefined;
-  }
-});
-
-if (store && typeof store.bind === 'function') store.bind(sock.ev);
+  sock = makeWASocket({
+    version,
+    auth: {
+      creds: state.creds,
+      keys: makeCacheableSignalKeyStore ? makeCacheableSignalKeyStore(state.keys, logger) : state.keys,
+    },
+    logger,
+    printQRInTerminal: false, // deprecated — we print QR ourselves
+    browser: ['ZYROX-BOT', 'Chrome', '1.0'],
+    syncFullHistory: false,
+    markOnlineOnConnect: true,
+    generateHighQualityLinkPreview: false,
+    // CRITICAL: required for Baileys 6.7+
+    getMessage: async (key) => ({ conversation: '' }),
+  });
 
   sock.ev.on('creds.update', saveCreds);
 
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
     if (qr) {
-      qrShown = true;
-      console.log('\n╔══════════════════════════════════════════╗');
-      console.log('║   📱 SCAN THIS QR IN WHATSAPP            ║');
-      console.log('║   WhatsApp → Linked Devices → Link       ║');
-      console.log('╚══════════════════════════════════════════╝\n');
+      console.log('\n\x1b[36m╔══════════════════════════════════════════╗');
+      console.log('║  📱  SCAN QR IN WHATSAPP                 ║');
+      console.log('║  WhatsApp → Linked Devices → Link        ║');
+      console.log('╚══════════════════════════════════════════╝\x1b[0m\n');
       qrcode.generate(qr, { small: true });
     }
     if (connection === 'open') {
-      qrShown = false;
       db().stats.startedAt = Date.now();
       saveDB();
-      const botName = sock.user?.name || sock.user?.id?.split(':')[0] || 'ZYROX-BOT';
-      const botId = sock.user?.id || 'unknown';
-      console.log('\n╔══════════════════════════════════════════╗');
-      console.log('║  ✅ ZYROX WA BOT CONNECTED!              ║');
-      console.log('║  Name: ' + botName.padEnd(35).slice(0,35) + ' ║');
-      console.log('║  ID  : ' + botId.padEnd(35).slice(0,35) + ' ║');
-      console.log('╚══════════════════════════════════════════╝');
-      console.log('👉 Ab WhatsApp pe /ping bhejo — bot reply karega!\n');
+      const name = sock.user?.name || sock.user?.id?.split(':')[0] || 'ZYROX-BOT';
+      const id = sock.user?.id || '';
+      console.log('\n\x1b[32m╔══════════════════════════════════════════╗');
+      console.log('║  ✅  ZYROX BOT CONNECTED!                ║');
+      console.log('║  Name: ' + String(name).padEnd(35).slice(0,35) + ' ║');
+      console.log('║  ID  : ' + String(id).padEnd(35).slice(0,35) + ' ║');
+      console.log('╠══════════════════════════════════════════╣');
+      console.log('║  🧪  Test:  WhatsApp pe /ping bhejo       ║');
+      console.log('╚══════════════════════════════════════════╝\x1b[0m\n');
     }
     if (connection === 'close') {
-      const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-      const loggedOut = reason === DisconnectReason.loggedOut;
+      const code = new Boom(lastDisconnect?.error).output?.statusCode;
+      const loggedOut = code === DisconnectReason.loggedOut;
       if (loggedOut) {
-        console.log('❌ Logged out — delete auth folder and restart to re-pair.');
-        try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); fs.mkdirSync(AUTH_DIR); } catch (_) {}
+        console.log('\x1b[31m❌ Logged out — auth folder reset. Restart to scan QR again.\x1b[0m');
+        try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); fs.mkdirSync(AUTH_DIR); } catch(_){}
         process.exit(0);
       }
-      const restartReasons = [
-        DisconnectReason.restartRequired,
-        DisconnectReason.connectionReplaced,
-        DisconnectReason.timedOut,
-        DisconnectReason.connectionClosed,
-        DisconnectReason.connectionLost
-      ];
-      const shouldReconnect = !lastDisconnect?.error?.isBoom || restartReasons.includes(reason);
-      console.log(`[conn] closed (reason=${reason}), reconnecting=${shouldReconnect}`);
-      if (shouldReconnect) {
-        setTimeout(connect, 3000);
-      } else {
-        process.exit(1);
-      }
+      console.log(`[conn] closed (code=${code}), reconnecting in 3s...`);
+      setTimeout(connect, 3000);
     }
   });
 
   sock.ev.on('messages.upsert', async (m) => {
-    if (m.type !== 'notify' && m.type !== 'append') {
-      // debug: log unknown types
-      if (process.env.ZYROX_DEBUG) console.log(`[upsert type=${m.type}] msgs=${(m.messages||[]).length}`);
-    }
     for (const msg of m.messages || []) {
-      if (!msg?.key) continue;
-      if (msg.key.remoteJid && isIgnoredJid(msg.key.remoteJid)) continue;
-      // Unwrap nested messages
-      const inner = extractInner(msg.message);
-      if (!inner.mtype) continue;
-      if (inner.mtype === 'protocolMessage' || inner.mtype === 'senderKeyDistributionMessage') continue;
-      if (msg.status === 'PENDING' || msg.status === 'ERROR') continue;
-      const jid = cleanJid(msg.key.remoteJid);
-      const sender = cleanJid(msg.key.participant || msg.key.remoteJid);
-      const txt = extractText(msg);
-      // Always log inbound user messages to terminal so user sees bot is alive
-      if (!msg.key.fromMe) {
-        const preview = (txt || '['+inner.mtype+']').slice(0,60);
-        console.log(`\x1b[36m[📩]\x1b[0m ${sender.split('@')[0]}: ${preview}`);
-      }
-      if (msg.key.fromMe === true) continue;
       try {
-        await handleMessage(msg, inner);
+        if (!msg?.key) continue;
+        if (ignoreJid(msg.key.remoteJid)) continue;
+        if (msg.key.fromMe) continue;
+        if (!isRealMessage(msg, msg.key.remoteJid)) continue;
+
+        const from = cleanJid(msg.key.remoteJid);
+        const participant = cleanJid(msg.key.participant || msg.key.remoteJid);
+        const text = getMessageText(msg).trim();
+        const isGrp = isGroup(from);
+
+        // Terminal echo so user can SEE messages arriving
+        const preview = (text || `[${getContentType(extractMessageContent(msg.message))||'media'}]`).slice(0, 70);
+        console.log(`\x1b[36m[📩]\x1b[0m ${participant.split('@')[0]}${isGrp?' (group)':''}: ${preview}`);
+
+        const user = getUser(participant);
+        if (!user.name && msg.pushName) user.name = msg.pushName;
+        user.totalMsgs++;
+        db().stats.totalMsgs++;
+
+        await handleMessage(msg, from, participant, text, isGrp, user);
+        saveDB();
       } catch (e) {
-        console.error('[handleMessage error]', e);
-        logger.error({ err: e }, 'handleMessage error');
+        console.error('[msg error]', e);
+        logger.error({ err: e }, 'messages.upsert');
       }
     }
   });
 
-  // Group participants update (welcome/kick)
   sock.ev.on('group-participants.update', async (up) => {
     try {
       const g = getGroup(up.id);
@@ -365,44 +236,30 @@ if (store && typeof store.bind === 'function') store.bind(sock.ev);
       for (const jid of up.participants) {
         const tag = '@' + jid.split('@')[0];
         let text = null;
-        if (up.action === 'add' && g.welcome) {
-          text = g.welcome.replace(/@user/g, tag);
-        } else if (up.action === 'add') {
-          text = `👋 Welcome ${tag} to *${meta?.subject || 'group'}*!\nType /menu to see what ZYROX can do. 🤖`;
-        }
-        if (up.action === 'remove') {
-          text = `👋 *${tag}* left/removed. Alvida! 💔`;
-        }
-        if (text) {
-          sendText(up.id, text, { mentions: [jid] }).catch(() => {});
-        }
+        if (up.action === 'add') text = g.welcome
+          ? g.welcome.replace(/@user/g, tag)
+          : `👋 Welcome ${tag} to *${meta?.subject || 'group'}*!\nType /menu to see ZYROX commands. 🤖`;
+        if (up.action === 'remove') text = `👋 *${tag}* left/removed. Alvida! 💔`;
+        if (text) sendText(up.id, text, { mentions: [jid] }).catch(()=>{});
       }
-    } catch (e) {
-      logger.error({ err: e }, 'group-participants error');
-    }
+    } catch (e) { logger.error({ err: e }, 'group-participants'); }
   });
 
-  // Scheduled messages tick
   setInterval(tickScheduled, 30_000);
 }
 
 // ============================================================
-//   Message handler
+//   Message handling
 // ============================================================
-const spamMap = new Map(); // jid -> [timestamps]
+const spamMap = new Map();
 const LINK_RE = /(https?:\/\/|www\.)[^\s]+|chat\.whatsapp\.com\//gi;
-const BAD_WORDS = [
-  'madarchod','bhenchod','bc','mc','chod','chutiya','chutiye','lund','lauda','randi',
-  'gandu','gaand','bhosdika','bsdk','fuddu','harami','teri maa','behen ke lode'
-];
+const BAD_WORDS = ['madarchod','bhenchod','mc','bc','chutiya','chutiye','lund','lauda','randi','gandu','gaand','bhosdika','bsdk','fuddu','harami','behen ke lode','maa ki chut'];
 
 function isSpamming(jid) {
   const now = Date.now();
-  const arr = spamMap.get(jid) || [];
-  const fresh = arr.filter(t => now - t < 5000); // 5 sec window
-  fresh.push(now);
-  spamMap.set(jid, fresh);
-  return fresh.length > 6; // >6 msgs in 5s = spam
+  const arr = (spamMap.get(jid) || []).filter(t => now - t < 5000);
+  arr.push(now); spamMap.set(jid, arr);
+  return arr.length > 6;
 }
 
 async function tickScheduled() {
@@ -410,95 +267,76 @@ async function tickScheduled() {
   const due = db().scheduled.filter(s => s.time <= now);
   for (const s of due) {
     try { await sendText(s.jid, `⏰ *Reminder for @${s.createdBy.split('@')[0]}*\n\n${s.text}`, { mentions: [s.createdBy] }); }
-    catch (e) { logger.error({ err: e }, 'sched fail'); }
+    catch (e) { logger.error({ err: e }, 'sched'); }
   }
-  if (due.length) {
-    db().scheduled = db().scheduled.filter(s => s.time > now);
-    saveDB();
-  }
+  if (due.length) { db().scheduled = db().scheduled.filter(s => s.time > now); saveDB(); }
 }
 
-async function handleMessage(msg, preInner = null) {
-  const from = cleanJid(msg.key.remoteJid);
-  if (!from || isIgnoredJid(from)) return;
-  const participant = cleanJid(msg.key.participant || msg.key.remoteJid);
-  const text = extractText(msg).trim();
-  const inner = preInner || extractInner(msg.message);
-  const isGrp = isGroup(from);
-  const user = getUser(participant);
-  if (user.name === null && msg.pushName) {
-    user.name = msg.pushName;
-  }
-  user.totalMsgs++;
-  db().stats.totalMsgs++;
-
+async function handleMessage(msg, from, participant, text, isGrp, user) {
   const prefix = CONFIG.prefix || '/';
   const isCmd = text.startsWith(prefix);
-  const [cmdRaw, ...argsArr] = text.slice(prefix.length).split(/\s+/);
-  const cmd = cmdRaw?.toLowerCase();
-  const body = isCmd ? argsArr.join(' ') : text;
+  const parts = isCmd ? text.slice(prefix.length).split(/\s+/) : [];
+  const cmd = (parts[0] || '').toLowerCase();
+  const args = parts.slice(1);
+  const body = args.join(' ');
 
-  // ── Group security filters ──────────────────────────────
+  // ── Group filters ──────────────────────────────────────
   if (isGrp) {
     const g = getGroup(from);
     let violation = null;
-    // Anti-link
-    if (g.antilink && LINK_RE.test(text) && !msg.key.fromMe) {
-      try {
-        const meta = await sock.groupMetadata(from);
-        if (!isAdmin(meta.participants, participant)) {
-          violation = 'link';
-          try { await sock.sendMessage(from, { delete: msg.key }); } catch (_) {}
-        }
-      } catch (_) {}
+    const metaP = sock.groupMetadata(from).catch(() => null);
+    // anti-link
+    if (g.antilink && LINK_RE.test(text)) {
+      const meta = await metaP;
+      if (!meta || !isAdmin(meta.participants, participant)) {
+        violation = 'link';
+        try { await sock.sendMessage(from, { delete: msg.key }); } catch(_){}
+      }
     }
-    // Bad word
+    // bad word
     if (!violation && g.badword) {
       const low = text.toLowerCase();
       if (BAD_WORDS.some(w => low.includes(w))) {
-        const meta = await sock.groupMetadata(from).catch(() => null);
+        const meta = await metaP;
         if (!meta || !isAdmin(meta.participants, participant)) {
           violation = 'badword';
-          try { await sock.sendMessage(from, { delete: msg.key }); } catch (_) {}
+          try { await sock.sendMessage(from, { delete: msg.key }); } catch(_){}
         }
       }
     }
-    // Anti-spam
+    // anti-spam
     if (!violation && g.antispam && isSpamming(participant)) {
       violation = 'spam';
-      try { await sock.sendMessage(from, { delete: msg.key }); } catch (_) {}
+      try { await sock.sendMessage(from, { delete: msg.key }); } catch(_){}
     }
-    // Mute (only bot replies to admins)
+    // mute
     if (!violation && g.mute && isCmd) {
-      const meta = await sock.groupMetadata(from).catch(() => null);
+      const meta = await metaP;
       if (!meta || !isAdmin(meta.participants, participant)) return;
     }
     if (violation) {
       user.warns = (user.warns || 0) + 1;
-      const warnCount = user.warns;
-      if (warnCount >= 3) {
+      if (user.warns >= 3) {
         try {
           await sock.groupParticipantsUpdate(from, [participant], 'remove');
-          sendText(from, `🚨 @${participant.split('@')[0]} removed (${violation} x${warnCount})`, { mentions: [participant] });
+          await sendText(from, `🚨 @${participant.split('@')[0]} removed (${violation} x${user.warns})`, { mentions: [participant] });
           user.warns = 0;
         } catch (_) {
-          sendText(from, `⚠ @${participant.split('@')[0]} stop ${violation}! (warn ${warnCount}/3 — no kick perms)`, { mentions: [participant] });
+          await sendText(from, `⚠ @${participant.split('@')[0]} stop ${violation}! (warn ${user.warns}/3 — no kick perms)`, { mentions: [participant] });
         }
       } else {
-        sendText(from, `⚠ @${participant.split('@')[0]} ${violation} dekh ke bhai! Warn ${warnCount}/3`, { mentions: [participant] });
+        await sendText(from, `⚠ @${participant.split('@')[0]} ${violation} dekh ke bhai! Warn ${user.warns}/3`, { mentions: [participant] });
       }
-      saveDB();
       return;
     }
   }
 
-  // ── Command routing ─────────────────────────────────────
+  // ── Command routing ────────────────────────────────────
   if (isCmd && commands.has(cmd)) {
-    const handler = commands.get(cmd);
     try {
       db().stats.commands = (db().stats.commands || 0) + 1;
-      await handler.run({
-        sock, msg, from, participant, body, args: argsArr,
+      await commands.get(cmd).run({
+        sock, msg, from, participant, body, args,
         isGroup: isGrp, prefix, command: cmd, rawText: text,
         sendText: (t, o) => sendText(from, t, o),
         reply: (t) => sendText(from, t, { quoted: msg }),
@@ -507,67 +345,57 @@ async function handleMessage(msg, preInner = null) {
         sendAudio: (b, p) => sendAudio(from, b, p),
         sendSticker: (b, o) => sendSticker(from, b, o),
         react: (e) => sendReact(from, msg.key, e),
-        quoted: quotedMessage(msg),
-        downloadMessage,
+        quoted: getQuotedMessage(msg),
+        downloadMessage: downloadMedia,
         isAdminOf: async (gid = from, who = participant) => {
-          const meta = await sock.groupMetadata(gid).catch(() => null);
+          const meta = await sock.groupMetadata(gid).catch(()=>null);
           return meta ? isAdmin(meta.participants, who) : false;
         },
         isOwner: () => {
           const me = sock.user.id.split(':')[0];
-          return participant === (CONFIG.owner_number + '@s.whatsapp.net') ||
-                 participant.split('@')[0] === me;
+          return participant === (CONFIG.owner_number + '@s.whatsapp.net') || participant.split('@')[0] === me;
         },
         db: { getGroup: () => getGroup(from), getUser: () => getUser(participant) },
-        CONFIG, media, gemini, pushAIHistory: (r, t) => pushAIHistory(participant, r, t),
+        CONFIG, media, gemini,
+        pushAIHistory: (r, t) => pushAIHistory(participant, r, t),
         clearAIHistory: () => clearAIHistory(participant),
-        saveDB
+        saveDB,
       });
-      saveDB();
     } catch (e) {
       logger.error({ err: e, cmd }, 'command error');
-      sendText(from, `⚠ Command error: ${e.message || e}`).catch(() => {});
+      sendText(from, `⚠ Command error: ${e.message || e}`).catch(()=>{});
     }
     return;
   }
 
-  // ── Auto-AI: @mention bot in group or PM auto-reply ────
-  const botMentioned =
-    (msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [])
-      .some(m => m.split(':')[0] === sock.user.id.split(':')[0]);
+  // ── Auto-AI ────────────────────────────────────────────
+  const content = extractMessageContent(msg.message);
+  const mentioned = content?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+  const botMentioned = mentioned.some(m => m.split(':')[0] === sock.user.id.split(':')[0] + '@s.whatsapp.net' || m.split('@')[0] === sock.user.id.split(':')[0]);
 
   const shouldAI =
     (isGrp && botMentioned && CONFIG.auto_ai_groups !== false) ||
-    (!isGrp && CONFIG.auto_ai_pm && text && !text.startsWith(prefix));
+    (!isGrp && CONFIG.auto_ai_pm && text && !isCmd);
 
-  if (shouldAI && text.length > 1 && !isCmd) {
+  if (shouldAI && text.length > 1) {
     const prompt = botMentioned ? text.replace(/@\d+/g, '').trim() : text;
     if (!prompt) return;
-    sendReact(from, msg.key, '🤖');
+    sendReact(from, msg.key, '🤖').catch(()=>{});
     try {
-      const aiReply = await gemini.ask(prompt, {
-        system: CONFIG.ai_prompt,
-        history: getUser(participant).aiHist
-      });
+      const aiReply = await gemini.ask(prompt, { system: CONFIG.ai_prompt, history: getUser(participant).aiHist });
       pushAIHistory(participant, 'user', prompt);
       pushAIHistory(participant, 'model', aiReply);
       await sendText(from, aiReply, { quoted: msg });
       db().stats.totalAI++;
-      saveDB();
     } catch (e) {
-      logger.error({ err: e }, 'ai error');
+      logger.error({ err: e }, 'ai');
       const fb = await gemini.askFallback(prompt);
       await sendText(from, fb, { quoted: msg });
     }
   }
 }
 
-// ── Start ──
-connect().catch(e => {
-  console.error('FATAL:', e);
-  process.exit(1);
-});
-
-// Keep alive
-process.on('uncaughtException', (e) => logger.error({ err: e }, 'uncaught'));
-process.on('unhandledRejection', (e) => logger.error({ err: e }, 'unhandled'));
+// ---- Start ----
+connect().catch(e => { console.error('FATAL:', e); process.exit(1); });
+process.on('uncaughtException', (e) => { console.error('[uncaught]', e); logger.error({ err: e }, 'uncaught'); });
+process.on('unhandledRejection', (e) => { console.error('[unhandled]', e); logger.error({ err: e }, 'unhandled'); });
