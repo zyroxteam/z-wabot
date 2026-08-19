@@ -10,3 +10,5 @@ bot.log
 npm-debug.log
 .vscode/
 .vercel
+_test.js
+test-results/

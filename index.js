@@ -101,6 +101,7 @@ async function downloadMedia(msg) {
 }
 
 function getMessageText(msg) {
+  if (!msg || !msg.message) return '';
   const content = extractMessageContent(msg.message);
   if (!content) return '';
   return (
@@ -157,8 +158,11 @@ async function connect() {
     syncFullHistory: false,
     markOnlineOnConnect: true,
     generateHighQualityLinkPreview: false,
-    // CRITICAL: required for Baileys 6.7+
-    getMessage: async (key) => ({ conversation: '' }),
+    // Returning `{ conversation: '' }` here is a known Baileys footgun — it makes
+    // decryption/normalization of real incoming messages silently fail, so the bot
+    // connects but never responds. Returning undefined is the correct behavior
+    // when we don't have the message cached.
+    getMessage: async (key) => undefined,
   });
 
   sock.ev.on('creds.update', saveCreds);
@@ -203,6 +207,10 @@ async function connect() {
       try {
         if (!msg?.key) continue;
         if (ignoreJid(msg.key.remoteJid)) continue;
+        // Messages without a decrypted `message` are stub/ciphertext/resend markers — skip.
+        // (Previously these still hit isRealMessage which returned false, but in some
+        // Baileys builds stubType = 0 so they'd fall through to our handler with no text.)
+        if (!msg.message || msg.messageStubType) continue;
         if (msg.key.fromMe) continue;
         if (!isRealMessage(msg, msg.key.remoteJid)) continue;
 
