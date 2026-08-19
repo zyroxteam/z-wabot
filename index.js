@@ -84,10 +84,67 @@ loadCommands();
 // ---- Helpers ----
 function cleanJid(jid) {
   if (!jid) return null;
-  return jid.split('@')[0] + '@' + (jid.includes('@g.us') ? 'g.us' : 's.whatsapp.net');
+  // strip resource (e.g. number@s.whatsapp.net:12345)
+  return jid.split(':')[0].split('@')[0] + '@' + (jid.includes('@g.us') ? 'g.us' : 's.whatsapp.net');
 }
 function isGroup(jid) { return jid && jid.endsWith('@g.us'); }
-function isMe(sock, jid) { return jid && jid.startsWith(sock.user.id.split(':')[0] + '@'); }
+function isMe(sock, jid) {
+  if (!sock?.user?.id || !jid) return false;
+  return jid.split(':')[0] === sock.user.id.split(':')[0] + '@s.whatsapp.net';
+}
+
+// Normalize a message: unwrap ephemeral/viewOnce/edited wrappers and return {text, mtype, raw}
+function extractInner(msgObj) {
+  if (!msgObj) return { message: null, mtype: null };
+  // Unwrap nested types used by newer Baileys
+  let m = msgObj;
+  let depth = 0;
+  while (m && depth < 5) {
+    if (m.ephemeralMessage) { m = m.ephemeralMessage.message; depth++; continue; }
+    if (m.viewOnceMessage)  { m = m.viewOnceMessage.message;  depth++; continue; }
+    if (m.viewOnceMessageV2) { m = m.viewOnceMessageV2.message; depth++; continue; }
+    if (m.editedMessage)    { m = m.editedMessage.message;    depth++; continue; }
+    if (m.documentWithCaptionMessage) { m = m.documentWithCaptionMessage.message; depth++; continue; }
+    if (m.reactionMessage || m.pollCreationMessage || m.pollUpdateMessage) {
+      // skip reactions/poll internals — but still return for poll handling
+      return { message: m, mtype: Object.keys(m)[0] };
+    }
+    break;
+  }
+  if (!m) return { message: null, mtype: null };
+  const keys = Object.keys(m);
+  // Skip system/protocol keys
+  const skipKeys = ['senderKeyDistributionMessage','messageContextInfo','protocolMessage'];
+  const mtype = keys.find(k => k.endsWith('Message') && !skipKeys.includes(k));
+  return { message: m, mtype };
+}
+
+function extractTextFromMessage(m) {
+  if (!m) return '';
+  return (
+    m.conversation ||
+    m.extendedTextMessage?.text ||
+    m.imageMessage?.caption ||
+    m.videoMessage?.caption ||
+    m.documentMessage?.caption ||
+    m.documentWithCaptionMessage?.message?.documentMessage?.caption ||
+    ''
+  );
+}
+
+function extractText(msg) {
+  if (!msg?.message) return '';
+  const inner = extractInner(msg.message);
+  return extractTextFromMessage(inner.message);
+}
+
+function isIgnoredJid(jid) {
+  if (!jid) return true;
+  if (jid === 'status@broadcast') return true;
+  if (jid.includes('@newsletter') || jid.includes('@lid')) return true;
+  if (jid.includes('@broadcast')) return true;
+  return false;
+}
 
 function sendText(jid, text, opts = {}) {
   return sock.sendMessage(jid, { text: String(text).slice(0, 4000), ...opts });
@@ -115,15 +172,23 @@ async function sendSticker(jid, buf, opts = {}) {
 }
 
 async function downloadMessage(msg, type = null) {
-  // msg is the proto message (with message.imageMessage etc.)
-  let mtype = type || Object.keys(msg.message || {}).find(k => k.endsWith('Message'));
-  if (!mtype) return null;
-  const content = msg.message[mtype];
-  if (!content) return null;
-  const stream = await downloadContentFromMessage(content, mtype.replace('Message', ''));
+  // msg is the proto message. Unwrap ephemeral/viewOnce/edited.
+  const msgObj = msg?.message ? msg.message : msg;
+  const { message: inner, mtype } = extractInner(msgObj);
+  const useType = type || mtype;
+  if (!useType || !inner || !inner[useType]) {
+    // try any *Message key
+    const anyKey = Object.keys(inner || {}).find(k => k.endsWith('Message'));
+    if (!anyKey) return null;
+    const stream = await downloadContentFromMessage(inner[anyKey], anyKey.replace('Message',''));
+    let buf = Buffer.alloc(0);
+    for await (const chunk of stream) buf = Buffer.concat([buf, chunk]);
+    return { buffer: buf, type: anyKey };
+  }
+  const stream = await downloadContentFromMessage(inner[useType], useType.replace('Message', ''));
   let buf = Buffer.alloc(0);
   for await (const chunk of stream) buf = Buffer.concat([buf, chunk]);
-  return { buffer: buf, type: mtype };
+  return { buffer: buf, type: useType };
 }
 
 function extractText(msg) {
@@ -139,8 +204,10 @@ function extractText(msg) {
 }
 
 function quotedMessage(msg) {
-  const et = msg.message?.extendedTextMessage;
+  const et = msg.message?.extendedTextMessage ||
+             extractInner(msg.message).message?.extendedTextMessage;
   if (!et?.contextInfo?.quotedMessage) return null;
+  const quotedInner = extractInner(et.contextInfo.quotedMessage);
   return {
     key: {
       remoteJid: msg.key.remoteJid,
@@ -148,7 +215,7 @@ function quotedMessage(msg) {
       id: et.contextInfo.stanzaId,
       participant: et.contextInfo.participant
     },
-    message: et.contextInfo.quotedMessage
+    message: quotedInner.message || et.contextInfo.quotedMessage
   };
 }
 
@@ -218,10 +285,14 @@ if (store && typeof store.bind === 'function') store.bind(sock.ev);
       qrShown = false;
       db().stats.startedAt = Date.now();
       saveDB();
+      const botName = sock.user?.name || sock.user?.id?.split(':')[0] || 'ZYROX-BOT';
+      const botId = sock.user?.id || 'unknown';
       console.log('\n╔══════════════════════════════════════════╗');
       console.log('║  ✅ ZYROX WA BOT CONNECTED!              ║');
-      console.log('║  Bot: ' + sock.user.name || sock.user.id.split(':')[0] + ' @ ' + sock.user.id);
-      console.log('╚══════════════════════════════════════════╝\n');
+      console.log('║  Name: ' + botName.padEnd(35).slice(0,35) + ' ║');
+      console.log('║  ID  : ' + botId.padEnd(35).slice(0,35) + ' ║');
+      console.log('╚══════════════════════════════════════════╝');
+      console.log('👉 Ab WhatsApp pe /ping bhejo — bot reply karega!\n');
     }
     if (connection === 'close') {
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
@@ -249,12 +320,29 @@ if (store && typeof store.bind === 'function') store.bind(sock.ev);
   });
 
   sock.ev.on('messages.upsert', async (m) => {
+    if (m.type !== 'notify' && m.type !== 'append') return;
     for (const msg of m.messages || []) {
-      if (!msg.key || msg.key.fromMe) continue;
-      if (msg.status === 'PENDING') continue;
+      // Skip: own messages, status, newsletters, protocol/receipts
+      if (!msg?.key) continue;
+      if (msg.key.remoteJid && isIgnoredJid(msg.key.remoteJid)) continue;
+      if (msg.key.fromMe === true) continue;
+      if (msg.status === 'PENDING' || msg.status === 'ERROR') continue;
+      // Unwrap nested messages (view-once/ephemeral/edited)
+      const inner = extractInner(msg.message);
+      if (!inner.mtype) continue;
+      // Protocol messages? skip
+      if (inner.mtype === 'protocolMessage' || inner.mtype === 'senderKeyDistributionMessage') continue;
+      // Debug: print inbound to terminal
+      const jid = cleanJid(msg.key.remoteJid);
+      const sender = cleanJid(msg.key.participant || msg.key.remoteJid);
+      const txt = extractText(msg);
+      if (process.argv.includes('--dev') || process.env.ZYROX_DEBUG) {
+        console.log(`[MSG] ${sender.split('@')[0]} → ${jid}: ${txt.slice(0,80)} (${inner.mtype})`);
+      }
       try {
-        await handleMessage(msg);
+        await handleMessage(msg, inner);
       } catch (e) {
+        console.error('[handleMessage error]', e);
         logger.error({ err: e }, 'handleMessage error');
       }
     }
@@ -321,11 +409,12 @@ async function tickScheduled() {
   }
 }
 
-async function handleMessage(msg) {
+async function handleMessage(msg, preInner = null) {
   const from = cleanJid(msg.key.remoteJid);
-  if (!from) return;
+  if (!from || isIgnoredJid(from)) return;
   const participant = cleanJid(msg.key.participant || msg.key.remoteJid);
   const text = extractText(msg).trim();
+  const inner = preInner || extractInner(msg.message);
   const isGrp = isGroup(from);
   const user = getUser(participant);
   if (user.name === null && msg.pushName) {
