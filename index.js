@@ -3,19 +3,31 @@
 //   Main entry: Baileys connection, message routing, commands
 // ============================================================
 process.env.NO_COLOR = '0';
+const Baileys = require('@whiskeysockets/baileys');
 const {
   default: makeWASocket,
   useMultiFileAuthState,
   Browsers,
   DisconnectReason,
   fetchLatestBaileysVersion,
-  makeInMemoryStore,
-  jidDecode,
   downloadContentFromMessage,
   generateWAMessageFromContent,
   proto
-} = require('@whiskeysockets/baileys');
-const { Boom } = require('@hapi/boom');
+} = Baileys;
+const makeCacheableSignalKeyStore = Baileys.makeCacheableSignalKeyStore || null;
+const jidDecode = Baileys.jidDecode || (() => null);
+
+// Fallback in-memory store (new Baileys removed it; provide stub)
+let makeInMemoryStore = Baileys.makeInMemoryStore;
+if (!makeInMemoryStore) {
+  try { makeInMemoryStore = require('baileys-store')?.makeInMemoryStore; } catch (_) {}
+}
+if (!makeInMemoryStore) {
+  makeInMemoryStore = function () { return { bind: () => {}, loadMessages: () => ({}), fetchGroupMetadata: () => null }; };
+}
+const { Boom } = (() => {
+  try { return require('@hapi/boom'); } catch (_) { return { Boom: class Boom extends Error { constructor(e){super(e);this.output={statusCode:e?.output?.statusCode||0}}; isBoom=true } }; }
+})();
 const P = require('pino');
 const fs = require('fs');
 const path = require('path');
@@ -35,10 +47,19 @@ const TEMP_DIR = path.resolve(__dirname, CONFIG.temp_dir || './temp');
 [AUTH_DIR, TEMP_DIR].forEach(d => { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); });
 
 // ---- Logger ----
-const logger = P({ level: process.argv.includes('--dev') ? 'debug' : 'info' }, P.destination('./bot.log'));
+const logger = P({ level: process.argv.includes('--dev') ? 'debug' : 'warn' }, P.destination('./bot.log'));
 
-// ---- Store (for group metadata) ----
-const store = makeInMemoryStore({ logger: logger.child({ store: true }) });
+// ---- In-memory store (optional — new Baileys removed it, so stub on failure) ----
+let store = null;
+try {
+  const baileys = require('@whiskeysockets/baileys');
+  if (baileys.makeInMemoryStore) {
+    store = baileys.makeInMemoryStore({ logger: logger.child({ store: true }) });
+  }
+} catch (_) {
+  store = { bind: () => {} };
+}
+if (!store) store = { bind: () => {} };
 
 // ---- Load commands dynamically ----
 const commands = new Map();
@@ -153,20 +174,33 @@ let qrShown = false;
 
 async function connect() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-  const { version } = await fetchLatestBaileysVersion();
+  let version;
+  try {
+    ({ version } = await fetchLatestBaileysVersion());
+  } catch (e) {
+    // Fallback version if fetch fails (no network / version mismatch)
+    logger.warn({ err: e.message }, 'version fetch failed — using fallback');
+    version = [2, 3000, 1017551350];
+  }
 
-  sock = makeWASocket({
-    version,
-    auth: state,
-    logger,
-    printQRInTerminal: true,
-    browser: Browsers.macOS('Safari'),
-    syncFullHistory: false,
-    markOnlineOnConnect: true,
-    generateHighQualityLinkPreview: false
-  });
+sock = makeWASocket({
+  version,
+  auth: {
+    creds: state.state.creds,
+    keys: makeCacheableSignalKeyStore
+      ? makeCacheableSignalKeyStore(state.state.keys, logger)
+      : state.state.keys,
+  },
+  logger,
+  printQRInTerminal: true,
+  // Browser identity — plain array works in all Baileys versions
+  browser: Browsers && typeof Browsers.app === 'function' ? Browsers.app('ZYROX-BOT', 'desktop') : ['ZYROX-BOT', 'Desktop', '1.0'],
+  syncFullHistory: false,
+  markOnlineOnConnect: true,
+  generateHighQualityLinkPreview: false
+});
 
-  store.bind(sock.ev);
+if (store && typeof store.bind === 'function') store.bind(sock.ev);
 
   sock.ev.on('creds.update', saveCreds);
 

@@ -9,3 +9,4 @@ bot.log
 .vercel/
 npm-debug.log
 .vscode/
+.vercel
